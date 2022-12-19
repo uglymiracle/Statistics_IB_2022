@@ -1,0 +1,279 @@
+---
+title: "project2"
+author: "Petrenko Kate"
+date: '2022-12-10'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!requireNamespace("ggplot2", quietly = TRUE))
+  install.packages("ggplot2")
+if (!requireNamespace("dplyr", quietly = TRUE))
+  install.packages("dplyr")
+if (!requireNamespace("MASS", quietly = TRUE))
+  install.packages("MASS")
+if (!requireNamespace("broom", quietly = TRUE))
+  install.packages("broom")
+if (!requireNamespace("corrplot", quietly = TRUE))
+  install.packages("corrplot")
+if (!requireNamespace("car", quietly = TRUE))
+  install.packages("car")
+if (!requireNamespace("gridExtra", quietly = TRUE))
+  install.packages("gridExtra")
+
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(broom)
+library(corrplot)
+library(car)
+library(gridExtra)
+```
+
+В данном проекте мы смотрим на то, как средняя стоимость домов из данных из пакета MASS ?зависит от различных факторов.
+
+В данных есть следующие параметры:
+
+1. crim - уровень преступности на душу населения
+2. zn - доля земель под жилую застройку
+3. indus - доля акров неторгового бизнеса на город
+4. chas - граничит ли участок с рекой
+5. nox - концентрация оксидов азота 
+6. rm - среднее количество комнат 
+7. age - доля домов, построенных до 1940
+8. dis - среднее расстояние до 5 центров занятости
+9. rad - индекс доступности к магистралям
+10. tax - полная ставка налога на имущество
+11. ptrario - соотношение учеников и учителей
+12. black - бяка, мне нравится этот критерий... (нехорошо это)
+13. lstat - доля населения с невысоким статусом
+14. medv - средняя стоимость домов
+
+
+## Загрузка данных
+Наличие реки рядом переводим в факторуню переменную
+```{r}
+houses <- Boston
+houses$chas <- factor(houses$chas)
+plot(houses)
+```
+
+Судя по графику, некоторые предикторы взаимодействуют друг с другом
+
+## Построение модели
+```{r}
+house_sc <- as.data.frame(sapply(houses[, names(houses) != "chas"], scale))
+house_sc$chas <- houses$chas
+house_model <- lm(medv ~ ., house_sc)
+summary(house_model)
+```
+## Проверка линейности взаимосвязи
+
+```{r}
+house_model_plot <- data.frame(augment(house_model), house_sc)
+ggplot(data = house_model_plot, aes(.fitted, .std.resid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0, color = 'blue') +
+  xlab('Предсказание') + 
+  ylab('Oстатки')
+```
+
+Полученный график позволяет сделать вывод о нейлинейности взаимосвязи и непостоянстве дисперсии
+
+## Проверка влиятельных наблюдений
+
+```{r}
+ggplot(house_model_plot, aes(1:nrow(house_model_plot), .cooksd)) + 
+  geom_hline(yintercept = 2, color = "blue") +
+  geom_bar(stat = "identity") + 
+  xlab('Наблюдения') + 
+  ylab('Расстояние Кука')
+```
+
+Влиятельных наблюдений нет
+
+## Нормальность распределения
+```{r}
+shapiro.test(house_model_plot$.std.resid)
+```
+
+Распределение стандартизированных остатков отличается от нормального
+
+## мультиколлинеарность
+так как в структуре данных мы видели корреляции, проверим на мультиколлинеарность
+```{r fig.width=6}
+cor_matrix <- cor(houses[, names(houses) != "chas"], method = "s")
+corrplot(cor_matrix, method = 'number')
+```
+
+Мультиколлинеарность есть
+```{r}
+car::vif(house_model)
+```
+
+Предикторы со значением выше 2 стоит исключить из модели
+
+## График предсказаний
+Переменная с наибольшим коэффициентом - lstat
+```{r}
+ggplot(house_sc, aes(x = lstat, y = medv)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  xlab('Низкий статус населения') + 
+  ylab('Средняя цена за дом')
+```
+
+```{r}
+predictions <- predict(house_model,  interval = 'confidence')
+predictions_full_data <- data.frame(house_sc, predictions)  
+  
+ggplot(predictions_full_data, aes(x = lstat, y = fit)) +
+  geom_ribbon(alpha = 0.2, aes(ymin = lwr, ymax = upr)) +
+  geom_line() + 
+  xlab('Низкий статус населения') + 
+  ylab('Предсказанное значение цены за дом')
+
+```
+
+Данная модель не очень хорошо предсказывает значения, необходимо убрать некоторые предикторы
+
+## Улучшение модели
+
+
+Удаляем предикторы с наибольшим vif, пока все не будут меньше 2
+
+```{r}
+house_model_vif <- car::vif(house_model)
+house_model_vif
+```
+
+```{r}
+house_model_2 <- update(house_model, .~. - tax)
+vif(house_model_2)
+house_model_3 <- update(house_model_2, .~. - nox)
+vif(house_model_3)
+house_model_4 <- update(house_model_3, .~. - dis)
+vif(house_model_4)
+house_model_5 <- update(house_model_4, .~. - lstat)
+vif(house_model_5)
+house_model_6 <- update(house_model_5, .~. - rad)
+vif(house_model_6)
+house_model_final <- update(house_model_6, .~. - indus)
+vif(house_model_final)
+```
+## Получение модели на данных без стандартизации
+
+```{r}
+house_model_unsc <- lm(medv ~ ., houses)
+house_model_2_unsc <- update(house_model_unsc, .~. - tax)
+vif(house_model_2_unsc)
+house_model_3_unsc <- update(house_model_2_unsc, .~. - nox)
+vif(house_model_3_unsc)
+house_model_4_unsc <- update(house_model_3_unsc, .~. - dis)
+vif(house_model_4_unsc)
+house_model_5_unsc <- update(house_model_4_unsc, .~. - lstat)
+vif(house_model_5_unsc)
+house_model_6_unsc <- update(house_model_5_unsc, .~. - rad)
+vif(house_model_6_unsc)
+house_model_final_unsc <- update(house_model_6_unsc, .~. - indus)
+vif(house_model_final_unsc)
+```
+
+```{r}
+summary(house_model_final_unsc)
+```
+
+Итоговая модель: 
+
+Если дом не у реки - medv = -7.06 - 0.108 * crim - 0.003 * zn + 7.06 * rm - 0.04 * age - 0.927 * ptratio + 0.015 * black
+Если у реки - medv = -3.54 - 0.108 * crim - 0.003 * zn + 7.06 * rm - 0.04 * age - 0.927 * ptratio + 0.015 * black
+
+## Тестирование модели
+
+```{r}
+predictions <- predict(house_model_final_unsc,  interval = 'confidence')
+predictions_full_data <- data.frame(houses, predictions)  
+  
+ggplot(predictions_full_data, aes(x = rm, y = fit)) +
+  geom_ribbon(alpha = 0.2, aes(ymin = lwr, ymax = upr)) +
+  geom_line() + 
+  xlab('Среднее количество комнат') + 
+  ylab('Предсказанное значение цены за дом')
+```
+
+Проверим, что у убранных предикторов нет звисимости
+
+```{r, fig.height=7, fig.width=7}
+
+plot_model <- ggplot(data = house_model_plot, aes(x = .fitted, y = .std.resid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "pink") +
+  geom_hline(yintercept = -2, color = "pink") +
+  xlab('Предсказанное значение') + 
+  ylab('Oстатки') 
+grid.arrange(plot_model + aes(tax),
+             plot_model + aes(nox),
+             plot_model + aes(dis),
+             plot_model + aes(lstat),
+             plot_model + aes(rad),
+             plot_model + aes(indus))
+
+
+```
+
+Предикторы можно не возвращать
+
+```{r}
+
+house_model_plot_unsc <- data.frame(fortify(house_model_final_unsc), houses[, c(1, 2, 4, 6, 7, 11, 12)])
+ggplot(house_model_plot_unsc, aes(x = 1:nrow(house_model_plot_unsc), y = .cooksd)) + 
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = 2, color = "blue") + 
+  xlab('Наблюдение') + 
+  ylab('Расстояние Кука')
+
+house_model_plot <- data.frame(augment(house_model_final_unsc), houses[, c()])
+ggplot(data = house_model_plot, aes(.fitted, .std.resid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0, color = 'blue') +
+  xlab('Предсказание') + 
+  ylab('Oстатки')
+
+```
+```{r}
+shapiro.test(house_model_plot$.std.resid)
+```
+
+
+Видим, что моделька не стала сильно лучше, честно говоря(
+
+## Рекомендации заказчику
+
+Итоговая модель: 
+
+Если дом не у реки - medv = -7.06 - 0.108 * crim - 0.003 * zn + 7.06 * rm - 0.04 * age - 0.927 * ptratio + 0.015 * black
+
+Если у реки - medv = -3.54 - 0.108 * crim - 0.003 * zn + 7.06 * rm - 0.04 * age - 0.927 * ptratio + 0.015 * black
+
+1. Дом у реки дроже на 3,5 тысячи
+2. При снижении уровня преступности цена вырастает незначительно (на 0.108 тысяч)
+3. Доля земель под жилую застройку изменяет цену совсем незначительно (0.003)
+4. Цена дома сильно зависит от количества комнат, вырастает на 7.06 тысяч с увеличением комнат
+5. При уменьшении доли старых домов (построенных до 1940 года) цена вырастает на 0.04 тысячи
+6. Уменьшение соотношения количества учеников на учителей увеличивает стоимость дома на 0.927 тысяч
+7. black - ололололо, ничего не знаю
+
+Таким образом, идеальный район:
+
+* находится у реки
+* имеет дома с большим количеством комнат
+* имеет на территории школу с маленькими классами (чтобы соотношение ученики-учитель было небольшое)
+* имеет мало старых домов в округе
+* с низкой преступностью
+
+
+Спасибо большое за курс! Вы супер!
